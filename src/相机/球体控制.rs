@@ -43,7 +43,7 @@ pub fn 控制_地球_视角(
         return;
     };
     let 视口高 = 窗口.height();
-    let _当前光标 = 窗口.cursor_position();
+    let 光标 = 窗口.cursor_position();
 
     let mut 鼠标增量 = Vec2::ZERO;
     for 事件 in 鼠标移动.read() {
@@ -53,7 +53,7 @@ pub fn 控制_地球_视角(
     // 先处理相机和缩放逻辑，确保该查询在作用域结束时被释放，再进入球体旋转查询。
     let 旋转数据 = {
         let mut 相机查询 = 控制集.p0();
-        let Ok((_相机, _全局变换, mut 相机变换)) = 相机查询.single_mut() else {
+        let Ok((相机, _全局变换, mut 相机变换)) = 相机查询.single_mut() else {
             return;
         };
 
@@ -75,6 +75,10 @@ pub fn 控制_地球_视角(
             None
         };
 
+        // 缩放锚定：累计本次所有滚轮事件需要的地球旋转，
+        // 使指针下的球面点在缩放前后停留在同一像素处。
+        let mut 缩放旋转 = Quat::IDENTITY;
+
         for 事件 in 滚轮.read() {
             // 只调整相机和地球中心的距离，不让地球本体在屏幕上位移。
             let 当前距离 = 相机变换.translation.length();
@@ -94,19 +98,72 @@ pub fn 控制_地球_视角(
             let 新离地 = (当前离地 * 倍率).clamp(最小离地, 50000.0);
             let 新距离 = 球体半径 + 新离地;
 
-            // 关键修正：相机沿着“从地心指向相机”的方向移动，但永远保持朝向地心。
+            // 缩放前指针射线命中的球面点（单位向量），用于缩放后的锚定校正。
+            let 缩放前命中 = 光标
+                .and_then(|位置| 指针球面点(&相机, &相机变换, 位置));
+
+            // 关键修正：相机沿着“从地心指向相机”的方向移动，但永远保持朝向地心，
+            // 因此地球始终位于屏幕正中，不会因缩放而偏移。
             相机变换.translation = 视线方向 * 新距离;
             相机变换.look_at(Vec3::ZERO, Vec3::Y);
+
+            if let (Some(起点), Some(位置)) = (缩放前命中, 光标) {
+                // 同一像素的射线在相机径向后移后指向球面另一处，
+                // 把地球旋转“起点→终点”的最短弧，该球面点便回到指针下方。
+                if let Some(终点) = 指针球面点或切点(&相机, &相机变换, 位置) {
+                    缩放旋转 = Quat::from_rotation_arc(起点, 终点) * 缩放旋转;
+                }
+            }
         }
 
-        旋转参数
+        (旋转参数, 缩放旋转)
     };
 
-    if let Some((水平旋转, 垂直旋转)) = 旋转数据 {
+    let (旋转参数, 缩放旋转) = 旋转数据;
+    // 拖拽旋转按原有方式叠加，缩放锚定旋转额外左乘，两者都是世界系旋转。
+    let 拖拽旋转 = 旋转参数.map(|(水平旋转, 垂直旋转)| 垂直旋转 * 水平旋转);
+    let 总旋转 = 缩放旋转 * 拖拽旋转.unwrap_or(Quat::IDENTITY);
+
+    if 总旋转 != Quat::IDENTITY {
         let mut 根查询 = 控制集.p1();
         let Ok(mut 根变换) = 根查询.single_mut() else {
             return;
         };
-        根变换.rotation = 垂直旋转 * 水平旋转 * 根变换.rotation;
+        根变换.rotation = 总旋转 * 根变换.rotation;
     }
+}
+
+// 求光标像素射线与球面的最近交点，返回该点的单位向量（地心指向交点）。
+// 与 地球信息 的射线拾取使用同一半径、同一求交公式，保证锚定点与 HUD 经纬度一致。
+fn 指针球面点(相机: &Camera, 相机变换: &Transform, 光标: Vec2) -> Option<Vec3> {
+    let 全局 = GlobalTransform::from(*相机变换);
+    let Ok(射线) = 相机.viewport_to_world(&全局, 光标) else {
+        return None;
+    };
+    let 原点 = 射线.origin;
+    let 方向 = 射线.direction.as_vec3();
+    let b = 原点.dot(方向);
+    let c = 原点.length_squared() - 球体半径 * 球体半径;
+    let 判别式 = b * b - c;
+    if 判别式 < 0.0 {
+        return None;
+    }
+    let t = (-b - 判别式.sqrt()).max(0.0);
+    Some((原点 + 方向 * t).normalize())
+}
+
+// 同 指针球面点，但缩小后指针可能落在地球盘面之外（射线不再相交），
+// 此时取射线到地心的垂足方向（切点）作为交点的极限位置，让锚定校正保持连续。
+fn 指针球面点或切点(相机: &Camera, 相机变换: &Transform, 光标: Vec2) -> Option<Vec3> {
+    let 全局 = GlobalTransform::from(*相机变换);
+    let Ok(射线) = 相机.viewport_to_world(&全局, 光标) else {
+        return None;
+    };
+    let 原点 = 射线.origin;
+    let 方向 = 射线.direction.as_vec3();
+    let b = 原点.dot(方向);
+    let c = 原点.length_squared() - 球体半径 * 球体半径;
+    let 判别式 = b * b - c;
+    let t = if 判别式 >= 0.0 { -b - 判别式.sqrt() } else { -b };
+    Some((原点 + 方向 * t).normalize())
 }
