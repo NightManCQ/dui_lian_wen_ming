@@ -34,7 +34,10 @@ pub fn 控制_地球_视角(
     // 把相机和球体根的 Transform 查询分开，避免 Bevy 在同一系统中出现重叠互斥访问。
     mut 控制集: ParamSet<
         (
-            Query<(&Camera, &GlobalTransform, &mut Transform), With<球体相机>>,
+            Query<
+                (&Camera, &GlobalTransform, &Projection, &mut Transform),
+                With<球体相机>,
+            >,
             Query<&mut Transform, With<球体根>>,
         ),
     >,
@@ -53,20 +56,34 @@ pub fn 控制_地球_视角(
     // 先处理相机和缩放逻辑，确保该查询在作用域结束时被释放，再进入球体旋转查询。
     let 旋转数据 = {
         let mut 相机查询 = 控制集.p0();
-        let Ok((相机, _全局变换, mut 相机变换)) = 相机查询.single_mut() else {
+        let Ok((相机, _全局变换, 投影, mut 相机变换)) = 相机查询.single_mut() else {
             return;
         };
 
-        let 焦距 = 1.0_f32;
+        // 跟手换算：屏幕中心处的球面点离相机的深度就是离地距离，
+        // 该深度下每 1 像素对应的世界长度 = 2 * 离地 * tan(fov/2) / 视口高，
+        // 与 地球信息 的“米每像素”同源，保证拖拽距离和鼠标像素严格一致。
+        let fov = match 投影 {
+            Projection::Perspective(p) => p.fov,
+            _ => 45.0_f32.to_radians(),
+        };
         let 相机距离 = 相机变换.translation.length();
         let 离地距离 = (相机距离 - 球体半径).max(0.0);
-        let 基础灵敏度 = 离地距离 / (焦距 * 球体半径 * 视口高 * 0.5);
-        let 像素灵敏度 = 基础灵敏度 * 0.8;
+        let 每像素世界长 = 2.0 * 离地距离 * (fov * 0.5).tan() / 视口高.max(1.0);
 
         let 旋转参数 = if 鼠标.pressed(MouseButton::Left) && 鼠标增量 != Vec2::ZERO {
-            let 窗口旋转 = 鼠标增量;
-            let 水平角度 = 窗口旋转.x * 像素灵敏度;
-            let 垂直角度 = 窗口旋转.y * 像素灵敏度;
+            // 垂直拖拽绕“屏幕右方”轴旋转，屏幕中心点到该轴的杠杆恒为球体半径。
+            let 垂直灵敏度 = 每像素世界长 / 球体半径;
+            // 水平拖拽绕世界极轴 Y 旋转，屏幕中心点到极轴的杠杆是 球体半径 * cos(纬度)，
+            // 除以该 cos 才能让相机处于高纬视角时水平位移也严格跟手。
+            let 相机方向 = 相机变换.translation.normalize_or_zero();
+            let cos纬 = (相机方向.x * 相机方向.x + 相机方向.z * 相机方向.z)
+                .sqrt()
+                .max(1e-3);
+            let 水平灵敏度 = 每像素世界长 / (球体半径 * cos纬);
+
+            let 水平角度 = 鼠标增量.x * 水平灵敏度;
+            let 垂直角度 = 鼠标增量.y * 垂直灵敏度;
             let 水平旋转 = Quat::from_rotation_y(水平角度);
             let 右方 = 相机变换.translation.cross(Vec3::Y).normalize_or_zero();
             let 垂直旋转 = Quat::from_axis_angle(右方, -垂直角度);
