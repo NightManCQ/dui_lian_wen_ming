@@ -31,6 +31,8 @@ pub fn 控制_地球_视角(
     mut 滚轮: MessageReader<MouseWheel>,
     // 获取窗口信息，用于读取视口高度和光标位置。
     窗口查询: Query<&Window>,
+    // 设置面板占用指针时，本系统要让位，避免点按钮顺手把地球转走。
+    界面状态: Res<crate::设置界面::界面状态>,
     // 把相机和球体根的 Transform 查询分开，避免 Bevy 在同一系统中出现重叠互斥访问。
     mut 控制集: ParamSet<
         (
@@ -42,6 +44,10 @@ pub fn 控制_地球_视角(
         ),
     >,
 ) {
+    if 界面状态.指针在界面上 {
+        return;
+    }
+
     let Ok(窗口) = 窗口查询.single() else {
         return;
     };

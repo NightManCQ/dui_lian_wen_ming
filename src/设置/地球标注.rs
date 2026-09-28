@@ -91,8 +91,8 @@ pub fn 生成_地球标注(
         ..default()
     });
 
-    // 加载项目内的真实字体，这样中文字符才可以被绘制到屏幕上。
-    let 字体 = 字体_仓库.add(Font::from_bytes(include_bytes!("../../assets/fonts/DejaVuSans.ttf").to_vec()));
+    // 加载中文字体（DejaVuSans 无汉字字形，会用系统 CJK 字体保证“北/南”正常显示）。
+    let 字体 = crate::地球信息::读取中文字体(字体_仓库);
 
     // 把线网格挂到地球根节点下，和地球本体一起旋转。
     命令.entity(根实体).with_children(|子命令| {

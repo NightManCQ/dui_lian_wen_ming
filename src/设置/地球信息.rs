@@ -22,12 +22,22 @@ pub struct 地理状态 {
 
 // 读取系统中可用的 CJK 字体，保证中文显示不出现方块字。
 pub fn 读取中文字体(字体仓库: &mut ResMut<Assets<Font>>) -> Handle<Font> {
-    let 路径 = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc";
-    let 字节 = std::fs::read(路径).unwrap_or_else(|_| {
-        // Debian KDE 常用的备选字体路径，避免 Noto 路径不存在时直接失败。
-        std::fs::read("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc")
-            .expect("未找到可用中文字体：Noto Sans CJK 或文泉驿正黑")
-    });
+    // 按平台依次探测常见中文字体，命中即取，避免硬编码单一系统路径。
+    let 候选路径 = [
+        // Windows：黑体是单字体 ttf，最稳妥；雅黑/宋体是 ttc 集合作为后备。
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/NotoSansSC-VF.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        // Linux（Noto / 文泉驿正黑）
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ];
+    let 字节 = 候选路径
+        .into_iter()
+        .find_map(|路径| std::fs::read(路径).ok())
+        .expect("未找到可用中文字体：请在候选路径中补一个系统中文字体");
     字体仓库.add(Font::from_bytes(字节))
 }
 
@@ -126,5 +136,10 @@ pub fn 更新地球信息(
     let 经度 = 地理.鼠标经度.map(|值| format!("经度: {值:.5}°")).unwrap_or_else(|| "经度: --".to_string());
     let 纬度 = 地理.鼠标纬度.map(|值| format!("纬度: {值:.5}°")).unwrap_or_else(|| "纬度: --".to_string());
     let 高度 = format!("离地高度: {:.0} 米", 地理.相机离地米);
-    文本.0 = format!("{经度}\n{纬度}\n{高度}");
+    let 新文本 = format!("{经度}\n{纬度}\n{高度}");
+    // 文本只在真正变化时写入：Bevy 的 Text 一旦变更就会重排并重新分词，
+    // 每帧无条件赋值会白白吃掉一整个核心的 CPU。
+    if 文本.0 != 新文本 {
+        文本.0 = 新文本;
+    }
 }
